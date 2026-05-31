@@ -6,6 +6,8 @@ export default function Login() {
   const { user, loading } = useAuth()
   const navigate = useNavigate()
 
+  const backendUrl = import.meta.env.VITE_API_URL?.replace('/api','') || 'http://localhost:5000'
+
   useEffect(() => {
     if (!loading && user) navigate('/directory', { replace: true })
   }, [user, loading])
@@ -159,7 +161,7 @@ export default function Login() {
 
           
 
-          <a href={`${import.meta.env.VITE_API_URL?.replace('/api','') || 'http://localhost:5000'}/api/auth/google`} className="google-btn">
+          <a href={`${backendUrl}/api/auth/google`} className="google-btn">
             <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
             Continue with Google
           </a>
