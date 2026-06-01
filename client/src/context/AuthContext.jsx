@@ -3,7 +3,6 @@ import axios from 'axios'
 
 export const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
 
-// Set token on every request if available
 const getToken = () => localStorage.getItem('brivox_token')
 
 axios.interceptors.request.use(config => {
@@ -18,35 +17,35 @@ const AuthContext = createContext()
 export const useAuth = () => useContext(AuthContext)
 
 export function AuthProvider({ children }) {
-  const [user, setUser]       = useState(null)
+  const [user, setUserState] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     axios.get(`${API}/auth/me`)
-      .then(r => setUser(r.data))
+      .then(r => setUserState(r.data))
       .catch(() => {
-        setUser(null)
+        setUserState(null)
         localStorage.removeItem('brivox_token')
       })
       .finally(() => setLoading(false))
   }, [])
 
-  const login = (userData) => {
-    if (userData.token) {
+  const setUser = (userData) => {
+    if (userData?.token) {
       localStorage.setItem('brivox_token', userData.token)
     }
-    setUser(userData)
+    setUserState(userData)
   }
 
   const logout = async () => {
     await axios.get(`${API}/auth/logout`).catch(() => {})
     localStorage.removeItem('brivox_token')
-    setUser(null)
+    setUserState(null)
     window.location.href = '/login'
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser: login, loading, logout }}>
+    <AuthContext.Provider value={{ user, setUser, loading, logout }}>
       {children}
     </AuthContext.Provider>
   )

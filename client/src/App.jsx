@@ -10,8 +10,8 @@ function Protected({ children }) {
     <div style={{
       display:'flex', height:'100vh',
       alignItems:'center', justifyContent:'center',
-      fontFamily:'DM Sans, sans-serif', color:'#8891a8',
-      flexDirection:'column', gap:'1rem'
+      flexDirection:'column', gap:'1rem',
+      fontFamily:'DM Sans, sans-serif', color:'#8891a8'
     }}>
       <div style={{
         width:'40px', height:'40px',
