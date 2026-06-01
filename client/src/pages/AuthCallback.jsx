@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import axios from 'axios'
-
-const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
+import { useNavigate }         from 'react-router-dom'
+import { useAuth }             from '../context/AuthContext'
 
 export default function AuthCallback() {
-  const navigate = useNavigate()
+  const navigate           = useNavigate()
+  const { loginWithToken } = useAuth()
   const [status, setStatus] = useState('Completing sign in...')
 
   useEffect(() => {
@@ -14,8 +13,8 @@ export default function AuthCallback() {
       const token  = params.get('token')
       const error  = params.get('error')
 
-      console.log('AuthCallback - token present:', !!token)
-      console.log('AuthCallback - error:', error)
+      console.log('AuthCallback — token present:', !!token)
+      console.log('AuthCallback — error:', error)
 
       if (error || !token) {
         setStatus('Sign in failed. Redirecting...')
@@ -23,46 +22,17 @@ export default function AuthCallback() {
         return
       }
 
-      // Store token immediately
-      localStorage.setItem('brivox_token', token)
-      console.log('Token stored in localStorage')
+      setStatus('Loading your profile...')
 
-      try {
-        setStatus('Loading your profile...')
+      // loginWithToken handles storing + fetching /me + setting user in context
+      const success = await loginWithToken(token)
 
-        // Verify token works
-        const { data } = await axios.get(`${API}/auth/me`, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          },
-          withCredentials: true
-        })
-
-        console.log('User profile loaded:', data.email)
-        setStatus('Welcome ' + data.name + '!')
-
-        // Store user in sessionStorage as backup
-        sessionStorage.setItem('brivox_user', JSON.stringify({ ...data, token }))
-
-        setTimeout(() => {
-          navigate('/directory', { replace: true })
-        }, 500)
-
-      } catch (err) {
-        console.error('Profile fetch failed:', err.message)
-        console.error('Status:', err.response?.status)
-
-        // Token stored but /me failed — still go to directory
-        // AuthContext will handle it
-        if (err.response?.status === 401) {
-          console.log('401 on /me — token may be invalid')
-          localStorage.removeItem('brivox_token')
-          setStatus('Authentication failed. Redirecting...')
-          setTimeout(() => navigate('/login?error=auth', { replace: true }), 1500)
-        } else {
-          // Network error — token is stored, try directory anyway
-          navigate('/directory', { replace: true })
-        }
+      if (success) {
+        setStatus('Welcome! Redirecting...')
+        setTimeout(() => navigate('/directory', { replace: true }), 400)
+      } else {
+        setStatus('Authentication failed. Redirecting...')
+        setTimeout(() => navigate('/login?error=auth', { replace: true }), 1500)
       }
     }
 
@@ -71,42 +41,36 @@ export default function AuthCallback() {
 
   return (
     <div style={{
-      display: 'flex',
-      height: '100vh',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexDirection: 'column',
-      gap: '1.2rem',
+      display: 'flex', height: '100vh',
+      alignItems: 'center', justifyContent: 'center',
+      flexDirection: 'column', gap: '1.2rem',
       fontFamily: 'DM Sans, sans-serif',
-      background: 'linear-gradient(168deg, #f7f9ff 0%, #fff 55%)'
+      background: 'linear-gradient(168deg,#f7f9ff 0%,#fff 55%)',
     }}>
       <div style={{
-        width: '44px', height: '44px',
+        fontFamily: "'Playfair Display',serif",
+        fontSize: '1.8rem', fontWeight: 700,
+        display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8,
+      }}>
+        BRIVOX
+        <span style={{ width:8, height:8, borderRadius:'50%', background:'#c9a84c', display:'inline-block' }}/>
+      </div>
+
+      <div style={{
+        width: 40, height: 40,
         border: '3px solid #e2e6ef',
         borderTopColor: '#1a56db',
         borderRadius: '50%',
-        animation: 'spin .8s linear infinite'
+        animation: 'spin .8s linear infinite',
       }}/>
+
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
 
       <div style={{ textAlign: 'center' }}>
-        <p style={{ fontSize: '1rem', fontWeight: '500', color: '#0f1117', marginBottom: '4px' }}>
+        <p style={{ fontSize: '1rem', fontWeight: 500, color: '#0f1117', marginBottom: 4 }}>
           {status}
         </p>
-        <p style={{ fontSize: '.8rem', color: '#8891a8' }}>
-          Please wait...
-        </p>
-      </div>
-
-      {/* Debug info - remove after fixing */}
-      <div style={{
-        position: 'fixed', bottom: '1rem',
-        background: '#f0f2f7', borderRadius: '8px',
-        padding: '.5rem 1rem', fontSize: '.72rem',
-        color: '#8891a8', maxWidth: '80vw',
-        wordBreak: 'break-all'
-      }}>
-        URL: {window.location.href.slice(0, 100)}
+        <p style={{ fontSize: '.8rem', color: '#8891a8' }}>Please wait...</p>
       </div>
     </div>
   )
