@@ -97,16 +97,23 @@ router.post('/login', async (req, res) => {
 
 // ── GOOGLE STEP 1 — redirect to Google ────────────────────
 router.get('/google', (req, res) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  const REDIRECT_URI = isProd
+    ? 'https://brivox-api.onrender.com/api/auth/google/callback'
+    : 'http://localhost:5000/api/auth/google/callback';
+
   const params = new URLSearchParams({
-    client_id:     GOOGLE_CLIENT_ID,
+    client_id:     process.env.GOOGLE_CLIENT_ID,
     redirect_uri:  REDIRECT_URI,
     response_type: 'code',
     scope:         'openid email profile',
     access_type:   'offline',
     prompt:        'select_account'
   });
+
   const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-  console.log('→ Redirecting to Google');
+  console.log('GOOGLE AUTH URL:', url);
+  console.log('REDIRECT_URI being sent:', REDIRECT_URI);
   res.redirect(url);
 });
 
