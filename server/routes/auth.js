@@ -6,6 +6,23 @@ const User    = require('../models/User');
 
 const isProd = process.env.NODE_ENV === 'production';
 
+
+
+// TEMP DEBUG - remove after fixing
+router.get('/google/test', (req, res) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  const REDIRECT_URI = isProd
+    ? 'https://brivox-api.onrender.com/api/auth/google/callback'
+    : 'http://localhost:5000/api/auth/google/callback';
+  
+  res.json({
+    REDIRECT_URI,
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID?.slice(0, 20) + '...',
+    NODE_ENV: process.env.NODE_ENV,
+    manual_auth_url: `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid%20email%20profile&prompt=select_account`
+  });
+});
+
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = isProd
@@ -23,6 +40,9 @@ const setCookie = (res, token) => {
     maxAge:   7 * 24 * 60 * 60 * 1000
   });
 };
+
+
+
 
 // ── REGISTER ──────────────────────────────────────────────
 router.post('/register', async (req, res) => {
