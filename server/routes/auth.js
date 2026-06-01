@@ -1,10 +1,17 @@
-const router   = require('express').Router();
-const passport = require('passport');
-const jwt      = require('jsonwebtoken');
-const bcrypt   = require('bcryptjs');
-const User     = require('../models/User');
+const router  = require('express').Router();
+const jwt     = require('jsonwebtoken');
+const bcrypt  = require('bcryptjs');
+const axios   = require('axios');
+const qs      = require('querystring');
+const User    = require('../models/User');
 
 const isProd = process.env.NODE_ENV === 'production';
+
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const REDIRECT_URI         = isProd
+  ? 'https://brivox-api.onrender.com/api/auth/google/callback'
+  : 'http://localhost:5000/api/auth/google/callback';
 
 const makeToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -18,7 +25,7 @@ const setCookie = (res, token) => {
   });
 };
 
-// REGISTER
+// ── REGISTER ──────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -33,13 +40,18 @@ router.post('/register', async (req, res) => {
     const user   = await User.create({ name, email, password, avatar, provider: 'local' });
     const token  = makeToken(user._id);
     setCookie(res, token);
-    return res.json({ _id: user._id, name: user.name, email: user.email, avatar: user.avatar, provider: user.provider, token });
+    return res.json({
+      _id: user._id, name: user.name,
+      email: user.email, avatar: user.avatar,
+      provider: user.provider, token
+    });
   } catch (err) {
+    console.error('Register error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// LOGIN
+// ── LOGIN ─────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -53,65 +65,92 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     const token = makeToken(user._id);
     setCookie(res, token);
-    return res.json({ _id: user._id, name: user.name, email: user.email, avatar: user.avatar, provider: user.provider, token });
+    return res.json({
+      _id: user._id, name: user.name,
+      email: user.email, avatar: user.avatar,
+      provider: user.provider, token
+    });
   } catch (err) {
+    console.error('Login error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GOOGLE — start
-router.get('/google',
-  passport.authenticate('google', {
-    scope: ['profile', 'email'],
-    session: false
-  })
-);
+// ── GOOGLE STEP 1 — redirect to Google ────────────────────
+router.get('/google', (req, res) => {
+  const params = new URLSearchParams({
+    client_id:     GOOGLE_CLIENT_ID,
+    redirect_uri:  REDIRECT_URI,
+    response_type: 'code',
+    scope:         'openid email profile',
+    access_type:   'offline',
+    prompt:        'select_account'
+  });
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  console.log('Redirecting to Google OAuth:', url);
+  res.redirect(url);
+});
 
-// GOOGLE — callback handled manually, no passport middleware here
+// ── GOOGLE STEP 2 — handle callback ───────────────────────
 router.get('/google/callback', async (req, res) => {
+  const { code, error } = req.query;
+
+  console.log('Google callback received');
+  console.log('Code present:', !!code);
+  console.log('Error:', error);
+
+  if (error || !code) {
+    console.error('Google OAuth error:', error);
+    return res.redirect(`${process.env.CLIENT_URL}/login?error=google_denied`);
+  }
+
   try {
-    const { code } = req.query;
-
-    if (!code) {
-      console.error('No code in Google callback');
-      return res.redirect(`${process.env.CLIENT_URL}/login?error=nocode`);
-    }
-
-    // Exchange code for tokens manually using googleapis
-    const { google } = require('googleapis');
-
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      isProd
-        ? 'https://brivox-api.onrender.com/api/auth/google/callback'
-        : 'http://localhost:5000/api/auth/google/callback'
+    // Step 1: Exchange code for access token
+    console.log('Exchanging code for token...');
+    const tokenResponse = await axios.post(
+      'https://oauth2.googleapis.com/token',
+      qs.stringify({
+        code,
+        client_id:     GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri:  REDIRECT_URI,
+        grant_type:    'authorization_code'
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
+    const { access_token } = tokenResponse.data;
+    console.log('Access token received:', !!access_token);
 
-    // Get user info
-    const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
-    const { data: profile } = await oauth2.userinfo.get();
+    // Step 2: Get user profile from Google
+    const profileResponse = await axios.get(
+      'https://www.googleapis.com/oauth2/v2/userinfo',
+      { headers: { Authorization: `Bearer ${access_token}` } }
+    );
 
-    console.log('Google profile:', profile.email);
+    const profile = profileResponse.data;
+    console.log('Google profile email:', profile.email);
+    console.log('Google profile name:', profile.name);
 
     if (!profile.email) {
-      return res.redirect(`${process.env.CLIENT_URL}/login?error=noemail`);
+      return res.redirect(`${process.env.CLIENT_URL}/login?error=no_email`);
     }
 
-    // Find or create user
+    // Step 3: Find or create user in MongoDB
     let user = await User.findOne({ googleId: profile.id });
 
     if (!user) {
+      // Check if email already registered
       user = await User.findOne({ email: profile.email });
       if (user) {
+        // Link Google to existing account
         user.googleId = profile.id;
         user.avatar   = profile.picture || user.avatar;
         user.provider = 'google';
         await user.save();
+        console.log('Linked Google to existing user:', profile.email);
       } else {
+        // Create new user
         user = await User.create({
           googleId: profile.id,
           name:     profile.name || 'BRIVOX User',
@@ -120,29 +159,47 @@ router.get('/google/callback', async (req, res) => {
           provider: 'google',
           password: null
         });
+        console.log('Created new Google user:', profile.email);
       }
+    } else {
+      console.log('Found existing Google user:', profile.email);
     }
 
+    // Step 4: Create JWT and redirect to frontend
     const token = makeToken(user._id);
     setCookie(res, token);
-    console.log('Google login success:', user.email);
-    return res.redirect(`${process.env.CLIENT_URL}/auth-callback?token=${token}`);
+
+    const redirectURL = `${process.env.CLIENT_URL}/auth-callback?token=${token}`;
+    console.log('Redirecting to:', redirectURL);
+    return res.redirect(redirectURL);
 
   } catch (err) {
-    console.error('Google callback error:', err.message);
+    console.error('Google callback failed:', err.message);
+    if (err.response) {
+      console.error('Response status:', err.response.status);
+      console.error('Response data:', JSON.stringify(err.response.data));
+    }
     return res.redirect(`${process.env.CLIENT_URL}/login?error=server`);
   }
 });
 
-// ME
+// ── ME ────────────────────────────────────────────────────
 router.get('/me', require('../middleware/authMiddleware'), (req, res) => {
   const u = req.user;
-  res.json({ _id: u._id, name: u.name, email: u.email, avatar: u.avatar, provider: u.provider });
+  res.json({
+    _id: u._id, name: u.name,
+    email: u.email, avatar: u.avatar,
+    provider: u.provider
+  });
 });
 
-// LOGOUT
+// ── LOGOUT ────────────────────────────────────────────────
 router.get('/logout', (req, res) => {
-  res.clearCookie('token', { httpOnly: true, secure: isProd, sameSite: isProd ? 'none' : 'lax' });
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure:   isProd,
+    sameSite: isProd ? 'none' : 'lax'
+  });
   res.json({ message: 'Logged out' });
 });
 
