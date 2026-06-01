@@ -2,14 +2,13 @@ const router  = require('express').Router();
 const jwt     = require('jsonwebtoken');
 const bcrypt  = require('bcryptjs');
 const axios   = require('axios');
-const qs      = require('querystring');
 const User    = require('../models/User');
 
 const isProd = process.env.NODE_ENV === 'production';
 
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const REDIRECT_URI         = isProd
+const REDIRECT_URI = isProd
   ? 'https://brivox-api.onrender.com/api/auth/google/callback'
   : 'http://localhost:5000/api/auth/google/callback';
 
@@ -87,97 +86,112 @@ router.get('/google', (req, res) => {
     prompt:        'select_account'
   });
   const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-  console.log('Redirecting to Google OAuth:', url);
+  console.log('→ Redirecting to Google');
   res.redirect(url);
 });
 
-// ── GOOGLE STEP 2 — handle callback ───────────────────────
+// ── GOOGLE STEP 2 — callback ───────────────────────────────
 router.get('/google/callback', async (req, res) => {
   const { code, error } = req.query;
 
-  console.log('Google callback received');
-  console.log('Code present:', !!code);
-  console.log('Error:', error);
+  console.log('← Google callback received');
+  console.log('  code present:', !!code);
+  console.log('  error:', error || 'none');
+  console.log('  REDIRECT_URI used:', REDIRECT_URI);
 
   if (error || !code) {
-    console.error('Google OAuth error:', error);
-    return res.redirect(`${process.env.CLIENT_URL}/login?error=google_denied`);
+    console.error('Google denied or no code:', error);
+    return res.redirect(`${process.env.CLIENT_URL}/login?error=denied`);
   }
 
   try {
-    // Step 1: Exchange code for access token
-    console.log('Exchanging code for token...');
-    const tokenResponse = await axios.post(
+    // Step A — Exchange code for tokens using URLSearchParams (works in Node 26)
+    console.log('  Exchanging code for access token...');
+
+    const tokenParams = new URLSearchParams();
+    tokenParams.append('code',          code);
+    tokenParams.append('client_id',     GOOGLE_CLIENT_ID);
+    tokenParams.append('client_secret', GOOGLE_CLIENT_SECRET);
+    tokenParams.append('redirect_uri',  REDIRECT_URI);
+    tokenParams.append('grant_type',    'authorization_code');
+
+    const tokenRes = await axios.post(
       'https://oauth2.googleapis.com/token',
-      qs.stringify({
-        code,
-        client_id:     GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri:  REDIRECT_URI,
-        grant_type:    'authorization_code'
-      }),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      tokenParams.toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      }
     );
 
-    const { access_token } = tokenResponse.data;
-    console.log('Access token received:', !!access_token);
+    const { access_token, id_token } = tokenRes.data;
+    console.log('  Access token received:', !!access_token);
 
-    // Step 2: Get user profile from Google
-    const profileResponse = await axios.get(
+    if (!access_token) {
+      console.error('  No access token in response:', tokenRes.data);
+      return res.redirect(`${process.env.CLIENT_URL}/login?error=no_token`);
+    }
+
+    // Step B — Get user profile
+    console.log('  Fetching user profile...');
+    const profileRes = await axios.get(
       'https://www.googleapis.com/oauth2/v2/userinfo',
-      { headers: { Authorization: `Bearer ${access_token}` } }
+      {
+        headers: { Authorization: `Bearer ${access_token}` }
+      }
     );
 
-    const profile = profileResponse.data;
-    console.log('Google profile email:', profile.email);
-    console.log('Google profile name:', profile.name);
+    const profile = profileRes.data;
+    console.log('  Profile email:', profile.email);
+    console.log('  Profile name:', profile.name);
+    console.log('  Profile id:', profile.id);
 
     if (!profile.email) {
+      console.error('  No email in profile');
       return res.redirect(`${process.env.CLIENT_URL}/login?error=no_email`);
     }
 
-    // Step 3: Find or create user in MongoDB
+    // Step C — Find or create user
     let user = await User.findOne({ googleId: profile.id });
+    console.log('  Existing user by googleId:', !!user);
 
     if (!user) {
-      // Check if email already registered
       user = await User.findOne({ email: profile.email });
+      console.log('  Existing user by email:', !!user);
+
       if (user) {
-        // Link Google to existing account
         user.googleId = profile.id;
         user.avatar   = profile.picture || user.avatar;
         user.provider = 'google';
         await user.save();
-        console.log('Linked Google to existing user:', profile.email);
+        console.log('  Linked Google to existing user');
       } else {
-        // Create new user
         user = await User.create({
           googleId: profile.id,
-          name:     profile.name || 'BRIVOX User',
+          name:     profile.name  || 'BRIVOX User',
           email:    profile.email,
           avatar:   profile.picture || '',
           provider: 'google',
           password: null
         });
-        console.log('Created new Google user:', profile.email);
+        console.log('  Created new user:', profile.email);
       }
-    } else {
-      console.log('Found existing Google user:', profile.email);
     }
 
-    // Step 4: Create JWT and redirect to frontend
+    // Step D — Create JWT and redirect
     const token = makeToken(user._id);
     setCookie(res, token);
 
-    const redirectURL = `${process.env.CLIENT_URL}/auth-callback?token=${token}`;
-    console.log('Redirecting to:', redirectURL);
-    return res.redirect(redirectURL);
+    const redirectTo = `${process.env.CLIENT_URL}/auth-callback?token=${token}`;
+    console.log('  Redirecting to frontend:', process.env.CLIENT_URL + '/auth-callback');
+    return res.redirect(redirectTo);
 
   } catch (err) {
-    console.error('Google callback failed:', err.message);
+    console.error('Google callback FAILED:', err.message);
     if (err.response) {
-      console.error('Response status:', err.response.status);
-      console.error('Response data:', JSON.stringify(err.response.data));
+      console.error('  HTTP status:', err.response.status);
+      console.error('  Response:', JSON.stringify(err.response.data));
     }
     return res.redirect(`${process.env.CLIENT_URL}/login?error=server`);
   }
