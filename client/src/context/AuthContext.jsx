@@ -3,13 +3,14 @@ import axios from 'axios'
 
 export const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
 
-const getToken = () => localStorage.getItem('brivox_token')
-
+// Always attach token to every request
 axios.interceptors.request.use(config => {
-  const token = getToken()
-  if (token) config.headers.Authorization = `Bearer ${token}`
+  const token = localStorage.getItem('brivox_token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
   return config
-})
+}, error => Promise.reject(error))
 
 axios.defaults.withCredentials = true
 
@@ -21,25 +22,65 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    axios.get(`${API}/auth/me`)
-      .then(r => setUserState(r.data))
-      .catch(() => {
+    const initAuth = async () => {
+      // Check sessionStorage first (set by AuthCallback)
+      const cached = sessionStorage.getItem('brivox_user')
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached)
+          setUserState(parsed)
+          setLoading(false)
+          return
+        } catch (e) {
+          sessionStorage.removeItem('brivox_user')
+        }
+      }
+
+      // Check localStorage token
+      const token = localStorage.getItem('brivox_token')
+      if (!token) {
         setUserState(null)
+        setLoading(false)
+        return
+      }
+
+      // Verify token with backend
+      try {
+        const { data } = await axios.get(`${API}/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+          withCredentials: true
+        })
+        setUserState(data)
+      } catch (err) {
+        console.error('Auth check failed:', err.response?.status)
         localStorage.removeItem('brivox_token')
-      })
-      .finally(() => setLoading(false))
+        sessionStorage.removeItem('brivox_user')
+        setUserState(null)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    initAuth()
   }, [])
 
   const setUser = (userData) => {
-    if (userData?.token) {
+    if (!userData) {
+      setUserState(null)
+      return
+    }
+    if (userData.token) {
       localStorage.setItem('brivox_token', userData.token)
     }
     setUserState(userData)
   }
 
   const logout = async () => {
-    await axios.get(`${API}/auth/logout`).catch(() => {})
+    try {
+      await axios.get(`${API}/auth/logout`)
+    } catch (e) {}
     localStorage.removeItem('brivox_token')
+    sessionStorage.removeItem('brivox_user')
     setUserState(null)
     window.location.href = '/login'
   }
