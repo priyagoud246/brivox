@@ -8,9 +8,13 @@ const isProd = process.env.NODE_ENV === 'production';
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
-const getRedirectURI = () => isProd
+// Hardcoded as fallback — never wrong
+const REDIRECT_URI = isProd
   ? 'https://brivox-api.onrender.com/api/auth/google/callback'
   : 'http://localhost:5000/api/auth/google/callback';
+
+// Hardcoded as fallback — never wrong
+const CLIENT_URL = process.env.CLIENT_URL || 'https://brivox-client.onrender.com';
 
 const makeToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -26,12 +30,14 @@ const setCookie = (res, token) => {
 
 // ── DEBUG ─────────────────────────────────────────────────
 router.get('/google/test', (req, res) => {
-  const REDIRECT_URI = getRedirectURI();
   res.json({
     REDIRECT_URI,
+    CLIENT_URL,
     GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID?.slice(0, 20) + '...',
+    GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET ? 'SET' : 'MISSING',
+    JWT_SECRET: process.env.JWT_SECRET ? 'SET' : 'MISSING',
     NODE_ENV: process.env.NODE_ENV,
-    CLIENT_URL: process.env.CLIENT_URL,
+    MONGO_URI: process.env.MONGO_URI ? 'SET' : 'MISSING',
   });
 });
 
@@ -85,7 +91,6 @@ router.post('/login', async (req, res) => {
 
 // ── GOOGLE STEP 1 ─────────────────────────────────────────
 router.get('/google', (req, res) => {
-  const REDIRECT_URI = getRedirectURI();
   const params = new URLSearchParams({
     client_id:     GOOGLE_CLIENT_ID,
     redirect_uri:  REDIRECT_URI,
@@ -100,22 +105,24 @@ router.get('/google', (req, res) => {
 // ── GOOGLE STEP 2 — callback ───────────────────────────────
 router.get('/google/callback', async (req, res) => {
   const { code, error } = req.query;
-  const REDIRECT_URI    = getRedirectURI();
-  const CLIENT_URL      = process.env.CLIENT_URL;
 
-  console.log('=== Google Callback ===');
+  console.log('=== Google Callback Hit ===');
   console.log('code present:', !!code);
-  console.log('error:', error || 'none');
+  console.log('error from Google:', error || 'none');
   console.log('REDIRECT_URI:', REDIRECT_URI);
   console.log('CLIENT_URL:', CLIENT_URL);
+  console.log('JWT_SECRET set:', !!process.env.JWT_SECRET);
+  console.log('GOOGLE_CLIENT_ID set:', !!GOOGLE_CLIENT_ID);
+  console.log('GOOGLE_CLIENT_SECRET set:', !!GOOGLE_CLIENT_SECRET);
 
   if (error || !code) {
+    console.error('No code or error from Google:', error);
     return res.redirect(`${CLIENT_URL}/login?error=denied`);
   }
 
   try {
-    // A — Exchange code for token
-    console.log('Step A: exchanging code...');
+    // STEP A — Exchange code for access token
+    console.log('Step A: exchanging code for token...');
     const tokenParams = new URLSearchParams({
       code,
       client_id:     GOOGLE_CLIENT_ID,
@@ -124,82 +131,112 @@ router.get('/google/callback', async (req, res) => {
       grant_type:    'authorization_code',
     });
 
-    const tokenRes = await axios.post(
-      'https://oauth2.googleapis.com/token',
-      tokenParams.toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
+    let tokenRes;
+    try {
+      tokenRes = await axios.post(
+        'https://oauth2.googleapis.com/token',
+        tokenParams.toString(),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      );
+    } catch (tokenErr) {
+      console.error('STEP A FAILED - Token exchange error:');
+      console.error('Status:', tokenErr.response?.status);
+      console.error('Data:', JSON.stringify(tokenErr.response?.data));
+      return res.redirect(`${CLIENT_URL}/login?error=token_exchange_failed`);
+    }
+
     const { access_token } = tokenRes.data;
     console.log('Step A done — access_token:', !!access_token);
 
     if (!access_token) {
-      console.error('No access_token in response:', tokenRes.data);
+      console.error('No access_token. Response:', JSON.stringify(tokenRes.data));
       return res.redirect(`${CLIENT_URL}/login?error=no_token`);
     }
 
-    // B — Get profile
-    console.log('Step B: fetching profile...');
-    const { data: profile } = await axios.get(
-      'https://www.googleapis.com/oauth2/v2/userinfo',
-      { headers: { Authorization: `Bearer ${access_token}` } }
-    );
-    console.log('Step B done — email:', profile.email, 'id:', profile.id);
+    // STEP B — Get Google profile
+    console.log('Step B: fetching Google profile...');
+    let profile;
+    try {
+      const { data } = await axios.get(
+        'https://www.googleapis.com/oauth2/v2/userinfo',
+        { headers: { Authorization: `Bearer ${access_token}` } }
+      );
+      profile = data;
+    } catch (profileErr) {
+      console.error('STEP B FAILED - Profile fetch error:', profileErr.message);
+      return res.redirect(`${CLIENT_URL}/login?error=profile_fetch_failed`);
+    }
+
+    console.log('Step B done — email:', profile.email);
 
     if (!profile.email) {
       return res.redirect(`${CLIENT_URL}/login?error=no_email`);
     }
 
-    // C — Find or create user (NO .save() to avoid pre-save hook issues)
-    console.log('Step C: finding/creating user...');
-    let user = await User.findOne({ googleId: profile.id });
-    console.log('Found by googleId:', !!user);
+    // STEP C — Find or create user in MongoDB
+    console.log('Step C: finding/creating user in MongoDB...');
+    let user;
+    try {
+      user = await User.findOne({ googleId: profile.id });
+      console.log('Found by googleId:', !!user);
 
-    if (!user) {
-      user = await User.findOne({ email: profile.email });
-      console.log('Found by email:', !!user);
+      if (!user) {
+        user = await User.findOne({ email: profile.email });
+        console.log('Found by email:', !!user);
 
-      if (user) {
-        // Update existing user using findByIdAndUpdate to bypass pre-save hook
-        user = await User.findByIdAndUpdate(
-          user._id,
-          {
+        if (user) {
+          user = await User.findByIdAndUpdate(
+            user._id,
+            {
+              googleId: profile.id,
+              avatar:   profile.picture || user.avatar,
+              provider: 'google',
+            },
+            { new: true }
+          );
+          console.log('Linked Google to existing user');
+        } else {
+          user = await User.create({
             googleId: profile.id,
-            avatar:   profile.picture || user.avatar,
+            name:     profile.name || 'BRIVOX User',
+            email:    profile.email,
+            avatar:   profile.picture || '',
             provider: 'google',
-          },
-          { new: true }
-        );
-        console.log('Linked Google to existing user');
-      } else {
-        // Create new Google user — password is null so pre-save hook skips hashing
-        user = await User.create({
-          googleId: profile.id,
-          name:     profile.name  || 'BRIVOX User',
-          email:    profile.email,
-          avatar:   profile.picture || '',
-          provider: 'google',
-          password: null,
-        });
-        console.log('Created new user:', profile.email);
+            password: null,
+          });
+          console.log('Created new Google user:', profile.email);
+        }
       }
+    } catch (dbErr) {
+      console.error('STEP C FAILED - MongoDB error:', dbErr.message);
+      console.error('DB Error details:', JSON.stringify({
+        name: dbErr.name,
+        code: dbErr.code,
+        keyValue: dbErr.keyValue,
+        errors: dbErr.errors,
+      }));
+      return res.redirect(`${CLIENT_URL}/login?error=db_error`);
     }
 
-    // D — Make JWT and redirect
-    console.log('Step D: creating token and redirecting...');
-    const token      = makeToken(user._id);
+    // STEP D — Make JWT and redirect to client
+    console.log('Step D: making JWT and redirecting...');
+    let token;
+    try {
+      token = makeToken(user._id);
+    } catch (jwtErr) {
+      console.error('STEP D FAILED - JWT error:', jwtErr.message);
+      return res.redirect(`${CLIENT_URL}/login?error=jwt_failed`);
+    }
+
     setCookie(res, token);
     const redirectTo = `${CLIENT_URL}/auth-callback?token=${token}`;
-    console.log('Redirecting to:', redirectTo.replace(token, '[TOKEN]'));
+    console.log('=== SUCCESS - Redirecting to auth-callback ===');
     return res.redirect(redirectTo);
 
   } catch (err) {
-    console.error('=== Google callback FAILED ===');
+    console.error('=== UNEXPECTED CRASH ===');
     console.error('Message:', err.message);
     console.error('Stack:', err.stack);
-    if (err.response) {
-      console.error('HTTP status:', err.response.status);
-      console.error('Response data:', JSON.stringify(err.response.data));
-    }
     return res.redirect(`${CLIENT_URL}/login?error=server`);
   }
 });
