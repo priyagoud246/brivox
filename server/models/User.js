@@ -5,7 +5,7 @@ const UserSchema = new mongoose.Schema({
   googleId: { type: String, default: null  },
   name:     { type: String, required: true },
   email:    { type: String, required: true, unique: true },
-  password: { type: String, default: null  },
+  password: { type: String, required: false, default: null },
   avatar:   { type: String, default: ''    },
   provider: { type: String, default: 'local', enum: ['local', 'google'] },
 }, { timestamps: true });
