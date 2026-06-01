@@ -174,50 +174,55 @@ router.get('/google/callback', async (req, res) => {
     }
 
     // STEP C — Find or create user in MongoDB
-    console.log('Step C: finding/creating user in MongoDB...');
-    let user;
-    try {
-      user = await User.findOne({ googleId: profile.id });
-      console.log('Found by googleId:', !!user);
+let user;
+try {
+  // First try finding by googleId
+  user = await User.findOne({ googleId: profile.id });
 
-      if (!user) {
-        user = await User.findOne({ email: profile.email });
-        console.log('Found by email:', !!user);
+  if (!user) {
+    // Try finding by email
+    user = await User.findOne({ email: profile.email });
 
-        if (user) {
-          user = await User.findByIdAndUpdate(
-            user._id,
-            {
-              googleId: profile.id,
-              avatar:   profile.picture || user.avatar,
-              provider: 'google',
-            },
-            { new: true }
-          );
-          console.log('Linked Google to existing user');
-        } else {
-          user = await User.create({
+    if (user) {
+      // User exists — just update with Google info
+      user = await User.findByIdAndUpdate(
+        user._id,
+        {
+          $set: {
+            googleId: profile.id,
+            avatar:   profile.picture || user.avatar,
+            provider: 'google',
+          }
+        },
+        { new: true, runValidators: false } // ← runValidators: false is KEY
+      );
+    } else {
+      // New user — use findOneAndUpdate with upsert to avoid duplicate errors
+      user = await User.findOneAndUpdate(
+        { email: profile.email },
+        {
+          $setOnInsert: {
             googleId: profile.id,
             name:     profile.name || 'BRIVOX User',
             email:    profile.email,
             avatar:   profile.picture || '',
             provider: 'google',
             password: null,
-          });
-          console.log('Created new Google user:', profile.email);
+          }
+        },
+        { 
+          new: true, 
+          upsert: true,          // ← create if not exists
+          runValidators: false,  // ← skip validation
+          setDefaultsOnInsert: true 
         }
-      }
-    } catch (dbErr) {
-      console.error('STEP C FAILED - MongoDB error:', dbErr.message);
-      console.error('DB Error details:', JSON.stringify({
-        name: dbErr.name,
-        code: dbErr.code,
-        keyValue: dbErr.keyValue,
-        errors: dbErr.errors,
-      }));
-      return res.redirect(`${CLIENT_URL}/login?error=db_error`);
+      );
     }
-
+  }
+} catch (dbErr) {
+  console.error('STEP C FAILED:', dbErr.message, dbErr.code);
+  return res.redirect(`${CLIENT_URL}/login?error=db_error`);
+}
     // STEP D — Make JWT and redirect to client
     console.log('Step D: making JWT and redirecting...');
     let token;
