@@ -96,43 +96,18 @@ router.post('/login', async (req, res) => {
 });
 
 // ── GOOGLE STEP 1 — redirect to Google ────────────────────
-router.get('/google', (req, res) => {
-  const isProd = process.env.NODE_ENV === 'production';
-  const REDIRECT_URI = isProd
-    ? 'https://brivox-api.onrender.com/api/auth/google/callback'
-    : 'http://localhost:5000/api/auth/google/callback';
-
-  const params = new URLSearchParams({
-    client_id:     process.env.GOOGLE_CLIENT_ID,
-    redirect_uri:  REDIRECT_URI,
-    response_type: 'code',
-    scope:         'openid email profile',
-    access_type:   'offline',
-    prompt:        'select_account'
-  });
-
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-  console.log('GOOGLE AUTH URL:', url);
-  console.log('REDIRECT_URI being sent:', REDIRECT_URI);
-  res.redirect(url);
-});
-
 // ── GOOGLE STEP 2 — callback ───────────────────────────────
-router.get('/google/callback', async (req, res) => {
+// Added 'next' to the arguments list to fix the crash
+router.get('/google/callback', async (req, res, next) => { 
   const { code, error } = req.query;
 
   console.log('← Google callback received');
-  console.log('  code present:', !!code);
-  console.log('  error:', error || 'none');
-  console.log('  REDIRECT_URI used:', REDIRECT_URI);
-
   if (error || !code) {
     console.error('Google denied or no code:', error);
     return res.redirect(`${process.env.CLIENT_URL}/login?error=denied`);
   }
 
   try {
-    // Step A — Exchange code for tokens using URLSearchParams (works in Node 26)
     console.log('  Exchanging code for access token...');
 
     const tokenParams = new URLSearchParams();
@@ -142,23 +117,48 @@ router.get('/google/callback', async (req, res) => {
     tokenParams.append('redirect_uri',  REDIRECT_URI);
     tokenParams.append('grant_type',    'authorization_code');
 
-    console.log('Sending token request with params:', tokenParams.toString());
     const tokenRes = await axios.post(
       'https://oauth2.googleapis.com/token',
       tokenParams.toString(),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
-    const { access_token, id_token } = tokenRes.data;
-    console.log('  Access token received:', !!access_token);
 
-    if (!access_token) {
-      console.error('  No access token in response:', tokenRes.data);
-      return res.redirect(`${process.env.CLIENT_URL}/login?error=no_token`);
+    const { access_token } = tokenRes.data;
+    if (!access_token) throw new Error('No access token in response');
+
+    const profileRes = await axios.get(
+      'https://www.googleapis.com/oauth2/v2/userinfo',
+      { headers: { Authorization: `Bearer ${access_token}` } }
+    );
+
+    const profile = profileRes.data;
+    let user = await User.findOne({ googleId: profile.id }) || await User.findOne({ email: profile.email });
+
+    if (!user) {
+      user = await User.create({
+        googleId: profile.id,
+        name:     profile.name  || 'BRIVOX User',
+        email:    profile.email,
+        avatar:   profile.picture || '',
+        provider: 'google',
+        password: null
+      });
+    } else if (user.provider !== 'google') {
+      user.googleId = profile.id;
+      user.provider = 'google';
+      await user.save();
     }
+
+    const token = makeToken(user._id);
+    setCookie(res, token);
+    return res.redirect(`${process.env.CLIENT_URL}/auth-callback?token=${token}`);
+
+  } catch (err) {
+    console.error('Google callback FAILED:', err.message);
+    // Now 'next' is defined, this will correctly pass the error to your global handler
+    return next(err); 
+  }
+});
 
     // Step B — Get user profile
     console.log('  Fetching user profile...');
