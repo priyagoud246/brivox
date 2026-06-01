@@ -67,19 +67,35 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// GOOGLE - start
+// GOOGLE — start OAuth flow
 router.get('/google',
-  passport.authenticate('google', { scope: ['profile', 'email'], session: false })
+  passport.authenticate('google', { scope: ['profile', 'email'] })
 );
 
-// GOOGLE - callback — pass token in URL so frontend can store it
+// GOOGLE — callback (NO session:false — let passport handle it normally)
 router.get('/google/callback',
-  passport.authenticate('google', { failureRedirect: `${process.env.CLIENT_URL}/login?error=google`, session: false }),
-  (req, res) => {
-    const token = makeToken(req.user._id);
-    setCookie(res, token);
-    // Also pass token in URL as fallback for cross-domain
-    res.redirect(`${process.env.CLIENT_URL}/auth-callback?token=${token}`);
+  (req, res, next) => {
+    passport.authenticate('google', (err, user, info) => {
+      if (err) {
+        console.error('Passport auth error:', err.message);
+        return res.redirect(`${process.env.CLIENT_URL}/login?error=server`);
+      }
+      if (!user) {
+        console.error('No user returned:', info);
+        return res.redirect(`${process.env.CLIENT_URL}/login?error=google`);
+      }
+
+      // Manually create JWT and redirect
+      try {
+        const token = makeToken(user._id);
+        setCookie(res, token);
+        console.log('Google login success for:', user.email);
+        return res.redirect(`${process.env.CLIENT_URL}/auth-callback?token=${token}`);
+      } catch (tokenErr) {
+        console.error('Token creation error:', tokenErr.message);
+        return res.redirect(`${process.env.CLIENT_URL}/login?error=token`);
+      }
+    })(req, res, next);
   }
 );
 
