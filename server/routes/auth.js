@@ -31,7 +31,7 @@ router.get('/google/test', (req, res) => {
     REDIRECT_URI,
     GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID?.slice(0, 20) + '...',
     NODE_ENV: process.env.NODE_ENV,
-    manual_auth_url: `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid%20email%20profile&prompt=select_account`
+    CLIENT_URL: process.env.CLIENT_URL,
   });
 });
 
@@ -40,9 +40,9 @@ router.post('/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!name || !email || !password)
-      return res.status(400).json({ error: 'All fields are required' });
+      return res.status(400).json({ error: 'All fields required' });
     if (password.length < 6)
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return res.status(400).json({ error: 'Password min 6 chars' });
 
     const existing = await User.findOne({ email });
     if (existing)
@@ -52,14 +52,9 @@ router.post('/register', async (req, res) => {
     const user   = await User.create({ name, email, password, avatar, provider: 'local' });
     const token  = makeToken(user._id);
     setCookie(res, token);
-
-    return res.json({
-      _id: user._id, name: user.name,
-      email: user.email, avatar: user.avatar,
-      provider: user.provider, token,
-    });
+    return res.json({ _id:user._id, name:user.name, email:user.email, avatar:user.avatar, provider:user.provider, token });
   } catch (err) {
-    console.error('Register error:', err.message);
+    console.error('Register error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -69,7 +64,7 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password)
-      return res.status(400).json({ error: 'Email and password are required' });
+      return res.status(400).json({ error: 'Email and password required' });
 
     const user = await User.findOne({ email });
     if (!user || user.provider === 'google')
@@ -81,19 +76,14 @@ router.post('/login', async (req, res) => {
 
     const token = makeToken(user._id);
     setCookie(res, token);
-
-    return res.json({
-      _id: user._id, name: user.name,
-      email: user.email, avatar: user.avatar,
-      provider: user.provider, token,
-    });
+    return res.json({ _id:user._id, name:user.name, email:user.email, avatar:user.avatar, provider:user.provider, token });
   } catch (err) {
-    console.error('Login error:', err.message);
+    console.error('Login error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── GOOGLE STEP 1 — redirect to Google ────────────────────
+// ── GOOGLE STEP 1 ─────────────────────────────────────────
 router.get('/google', (req, res) => {
   const REDIRECT_URI = getRedirectURI();
   const params = new URLSearchParams({
@@ -104,74 +94,84 @@ router.get('/google', (req, res) => {
     access_type:   'offline',
     prompt:        'select_account',
   });
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-  console.log('Google auth URL:', url);
-  res.redirect(url);
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
 
 // ── GOOGLE STEP 2 — callback ───────────────────────────────
 router.get('/google/callback', async (req, res) => {
   const { code, error } = req.query;
   const REDIRECT_URI    = getRedirectURI();
+  const CLIENT_URL      = process.env.CLIENT_URL;
 
-  console.log('← Google callback');
-  console.log('  code present:', !!code);
-  console.log('  error:', error || 'none');
-  console.log('  REDIRECT_URI:', REDIRECT_URI);
+  console.log('=== Google Callback ===');
+  console.log('code present:', !!code);
+  console.log('error:', error || 'none');
+  console.log('REDIRECT_URI:', REDIRECT_URI);
+  console.log('CLIENT_URL:', CLIENT_URL);
 
   if (error || !code) {
-    console.error('Google denied or no code:', error);
-    return res.redirect(`${process.env.CLIENT_URL}/login?error=denied`);
+    return res.redirect(`${CLIENT_URL}/login?error=denied`);
   }
 
   try {
-    // Step A — Exchange code for tokens
-    const tokenParams = new URLSearchParams();
-    tokenParams.append('code',          code);
-    tokenParams.append('client_id',     GOOGLE_CLIENT_ID);
-    tokenParams.append('client_secret', GOOGLE_CLIENT_SECRET);
-    tokenParams.append('redirect_uri',  REDIRECT_URI);
-    tokenParams.append('grant_type',    'authorization_code');
+    // A — Exchange code for token
+    console.log('Step A: exchanging code...');
+    const tokenParams = new URLSearchParams({
+      code,
+      client_id:     GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri:  REDIRECT_URI,
+      grant_type:    'authorization_code',
+    });
 
     const tokenRes = await axios.post(
       'https://oauth2.googleapis.com/token',
       tokenParams.toString(),
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
-
     const { access_token } = tokenRes.data;
-    console.log('  Access token received:', !!access_token);
+    console.log('Step A done — access_token:', !!access_token);
 
     if (!access_token) {
-      console.error('  No access token:', tokenRes.data);
-      return res.redirect(`${process.env.CLIENT_URL}/login?error=no_token`);
+      console.error('No access_token in response:', tokenRes.data);
+      return res.redirect(`${CLIENT_URL}/login?error=no_token`);
     }
 
-    // Step B — Get user profile
-    const profileRes = await axios.get(
+    // B — Get profile
+    console.log('Step B: fetching profile...');
+    const { data: profile } = await axios.get(
       'https://www.googleapis.com/oauth2/v2/userinfo',
       { headers: { Authorization: `Bearer ${access_token}` } }
     );
-
-    const profile = profileRes.data;
-    console.log('  Profile email:', profile.email);
+    console.log('Step B done — email:', profile.email, 'id:', profile.id);
 
     if (!profile.email) {
-      return res.redirect(`${process.env.CLIENT_URL}/login?error=no_email`);
+      return res.redirect(`${CLIENT_URL}/login?error=no_email`);
     }
 
-    // Step C — Find or create user
+    // C — Find or create user (NO .save() to avoid pre-save hook issues)
+    console.log('Step C: finding/creating user...');
     let user = await User.findOne({ googleId: profile.id });
+    console.log('Found by googleId:', !!user);
 
     if (!user) {
       user = await User.findOne({ email: profile.email });
+      console.log('Found by email:', !!user);
+
       if (user) {
-        user.googleId = profile.id;
-        user.avatar   = profile.picture || user.avatar;
-        user.provider = 'google';
-        await user.save();
-        console.log('  Linked Google to existing user');
+        // Update existing user using findByIdAndUpdate to bypass pre-save hook
+        user = await User.findByIdAndUpdate(
+          user._id,
+          {
+            googleId: profile.id,
+            avatar:   profile.picture || user.avatar,
+            provider: 'google',
+          },
+          { new: true }
+        );
+        console.log('Linked Google to existing user');
       } else {
+        // Create new Google user — password is null so pre-save hook skips hashing
         user = await User.create({
           googleId: profile.id,
           name:     profile.name  || 'BRIVOX User',
@@ -180,44 +180,39 @@ router.get('/google/callback', async (req, res) => {
           provider: 'google',
           password: null,
         });
-        console.log('  Created new user:', profile.email);
+        console.log('Created new user:', profile.email);
       }
     }
 
-    // Step D — Create JWT and redirect to frontend
+    // D — Make JWT and redirect
+    console.log('Step D: creating token and redirecting...');
     const token      = makeToken(user._id);
     setCookie(res, token);
-    const redirectTo = `${process.env.CLIENT_URL}/auth-callback?token=${token}`;
-    console.log('  Redirecting to:', redirectTo);
+    const redirectTo = `${CLIENT_URL}/auth-callback?token=${token}`;
+    console.log('Redirecting to:', redirectTo.replace(token, '[TOKEN]'));
     return res.redirect(redirectTo);
 
   } catch (err) {
-    console.error('Google callback FAILED:', err.message);
+    console.error('=== Google callback FAILED ===');
+    console.error('Message:', err.message);
+    console.error('Stack:', err.stack);
     if (err.response) {
-      console.error('  HTTP status:', err.response.status);
-      console.error('  Response:', JSON.stringify(err.response.data));
+      console.error('HTTP status:', err.response.status);
+      console.error('Response data:', JSON.stringify(err.response.data));
     }
-    return res.redirect(`${process.env.CLIENT_URL}/login?error=server`);
+    return res.redirect(`${CLIENT_URL}/login?error=server`);
   }
 });
 
 // ── ME ────────────────────────────────────────────────────
 router.get('/me', require('../middleware/authMiddleware'), (req, res) => {
   const u = req.user;
-  res.json({
-    _id: u._id, name: u.name,
-    email: u.email, avatar: u.avatar,
-    provider: u.provider,
-  });
+  res.json({ _id:u._id, name:u.name, email:u.email, avatar:u.avatar, provider:u.provider });
 });
 
 // ── LOGOUT ────────────────────────────────────────────────
 router.get('/logout', (req, res) => {
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure:   isProd,
-    sameSite: isProd ? 'none' : 'lax',
-  });
+  res.clearCookie('token', { httpOnly:true, secure:isProd, sameSite:isProd?'none':'lax' });
   res.json({ message: 'Logged out' });
 });
 
