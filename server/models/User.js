@@ -1,13 +1,13 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const bcrypt   = require('bcryptjs');
 
 const UserSchema = new mongoose.Schema({
-  googleId:  { type: String },
-  name:      { type: String, required: true },
-  email:     { type: String, required: true, unique: true },
-  password:  { type: String }, // null for Google users
-  avatar:    { type: String },
-  provider:  { type: String, default: 'local' } // 'local' or 'google'
+  googleId: { type: String, default: null },
+  name:     { type: String, required: true },
+  email:    { type: String, required: true, unique: true },
+  password: { type: String, default: null },
+  avatar:   { type: String, default: '' },
+  provider: { type: String, default: 'local' }
 }, { timestamps: true });
 
 UserSchema.pre('save', async function(next) {
@@ -17,6 +17,7 @@ UserSchema.pre('save', async function(next) {
 });
 
 UserSchema.methods.matchPassword = async function(entered) {
+  if (!this.password) return false;
   return await bcrypt.compare(entered, this.password);
 };
 
