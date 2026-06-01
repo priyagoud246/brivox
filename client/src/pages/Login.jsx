@@ -1,12 +1,24 @@
-import { useEffect } from 'react'
+// WITH THIS:
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
   const { user, loading } = useAuth()
   const navigate = useNavigate()
+  const [serverReady, setServerReady] = useState(false)
+  const [waking, setWaking] = useState(true)
 
-  const backendUrl = import.meta.env.VITE_API_URL?.replace('/api','') || 'http://localhost:5000'
+  const backendUrl = import.meta.env.VITE_API_URL?.replace('/api', '')
+    || 'http://localhost:5000'
+
+  // Wake the server before user clicks Google
+  useEffect(() => {
+    fetch(`${backendUrl}/health`)
+      .then(() => setServerReady(true))
+      .catch(() => setServerReady(true))
+      .finally(() => setWaking(false))
+  }, [])
 
   useEffect(() => {
     if (!loading && user) navigate('/directory', { replace: true })
@@ -161,11 +173,15 @@ export default function Login() {
 
           
 
-          <a href={`${backendUrl}/api/auth/google`} className="google-btn">
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
-            Continue with Google
-          </a>
-
+          
+  <a
+  href={serverReady ? `${backendUrl}/api/auth/google` : '#'}
+  className="google-btn"
+  style={{ opacity: waking ? 0.6 : 1, pointerEvents: waking ? 'none' : 'auto' }}
+>
+  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
+  {waking ? 'Connecting...' : 'Continue with Google'}
+</a>
           <div className="divider">trusted by professionals across India</div>
 
           <div className="stats">
