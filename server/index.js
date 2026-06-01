@@ -32,7 +32,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type','Authorization','Cookie']
 }));
 
-app.options('*', cors());
+app.options(/.*/, cors());
 
 // ── MIDDLEWARE ────────────────────────────────────────────
 app.use(express.json());
