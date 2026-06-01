@@ -142,6 +142,7 @@ router.get('/google/callback', async (req, res) => {
     tokenParams.append('redirect_uri',  REDIRECT_URI);
     tokenParams.append('grant_type',    'authorization_code');
 
+    console.log('Sending token request with params:', tokenParams.toString());
     const tokenRes = await axios.post(
       'https://oauth2.googleapis.com/token',
       tokenParams.toString(),
@@ -151,7 +152,6 @@ router.get('/google/callback', async (req, res) => {
         }
       }
     );
-
     const { access_token, id_token } = tokenRes.data;
     console.log('  Access token received:', !!access_token);
 
